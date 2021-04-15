@@ -253,6 +253,15 @@ function islandora_xquery_run_query_batch_operation(array $dsids, $object_range,
   if (!isset($context['sandbox']['progress'])) {
     $context['sandbox']['progress'] = 0;
     $context['sandbox']['object_range'] = $object_range;
+
+    if (!is_array($object_range)) {
+      // assign $old_proc->solrQuery, $old_proc->solrParams to sandbox variables for the new processor.
+      // Just stash these here, as the solr processor can get stale.
+      $context['sandbox']['solrQuery'] = $object_range->islandoraSolrQueryProcessor->solrQuery;
+      $context['sandbox']['solrParams'] = $object_range->islandoraSolrQueryProcessor->solrParams;
+    }
+    $context['sandbox']['xquery_batch'] = array();
+
     $context['sandbox']['total'] = islandora_xquery_run_query_batch_operation_get_total($context);
 
     // Insert a record in the db to describe this batch operation.
@@ -292,6 +301,8 @@ function islandora_xquery_run_query_batch_operation(array $dsids, $object_range,
       return;
     }
   }
+
+  // $context['sandbox']['xquery_batch']
 
   // Run the find/replace on all applicable datastreams.
   $current_object = islandora_xquery_run_query_batch_operation_get_object($context);
@@ -364,38 +375,63 @@ function islandora_xquery_run_query_batch_operation_get_object(&$context) {
   if (is_array($context['sandbox']['object_range'])) {
     return islandora_object_load(array_pop($context['sandbox']['object_range']));
   }
+
+
   // Init search.
   if (!isset($context['sandbox']['search_settings'])) {
     $context['sandbox']['search_settings']['step_size'] = 100;
-    $context['sandbox']['search_settings']['offset'] = count(
-        $context['sandbox']['object_range']
-        ->islandoraSolrQueryProcessor
-        ->islandoraSolrResult['response']['objects']
-    );
+    $context['sandbox']['search_settings']['offset'] = 0;
+    // $context['sandbox']['search_settings']['offset'] = count(
+    //     $context['sandbox']['object_range']
+    //     ->islandoraSolrQueryProcessor
+    //     ->islandoraSolrResult['response']['objects']
+    // );
   }
   // Get a PID if available.
   $solr_result = array_pop($context['sandbox']['object_range']
       ->islandoraSolrQueryProcessor
       ->islandoraSolrResult['response']['objects']);
+  $solr_result = FALSE;
+
+  $pid;
+
   if ($solr_result) {
     $pid = $solr_result['PID'];
   }
   else {
-    // Populate PIDs if necessary to get one.
-    // Bit of cludge here since this class isn't available when unserializing.
-    // No idea why it's not being autoloaded.
-    // Just make a new one and re-use the properties in the sandbox.  Then
-    // replace it in the sandbox.  Its properties are needed elsewhere.
-    $old_proc = $context['sandbox']['object_range']->islandoraSolrQueryProcessor;
-    $processor = new IslandoraSolrQueryProcessor();
-    $context['sandbox']['object_range']->islandoraSolrQueryProcessor = $processor;
-    $processor->buildQuery($old_proc->solrQuery, $old_proc->solrParams);
-    $processor->solrLimit = $context['sandbox']['search_settings']['step_size'];
-    $processor->solrStart = $context['sandbox']['search_settings']['offset'];
-    $processor->executeQuery();
-    $solr_result = array_pop($processor->islandoraSolrResult['response']['objects']);
-    $pid = $solr_result['PID'];
-    $context['sandbox']['search_settings']['offset'] += $context['sandbox']['search_settings']['step_size'];
+    if (!empty($context['sandbox']['xquery_batch'])) {
+      $pid = trim(array_pop($context['sandbox']['xquery_batch']));
+      // dd($pid, 'pop from batch array');
+    }
+    else {
+      // Grab the batch of 20 or 100 and stick $context['sandbox']['xquery_batch'] array.
+
+
+      // Populate PIDs if necessary to get one.
+      // Bit of cludge here since this class isn't available when unserializing.
+      // No idea why it's not being autoloaded.
+      // Just make a new one and re-use the properties in the sandbox.  Then
+      // replace it in the sandbox.  Its properties are needed elsewhere.
+      $old_proc = $context['sandbox']['object_range']->islandoraSolrQueryProcessor;
+      $processor = new IslandoraSolrQueryProcessor();
+      $context['sandbox']['object_range']->islandoraSolrQueryProcessor = $processor;
+      // $processor->buildQuery($old_proc->solrQuery, $old_proc->solrParams);
+      $processor->buildQuery($context['sandbox']['solrQuery'], $context['sandbox']['solrParams']);
+      $processor->solrLimit = $context['sandbox']['search_settings']['step_size'];
+      $processor->solrStart = $context['sandbox']['search_settings']['offset'];
+      $processor->executeQuery();
+      // $solr_result = array_pop($processor->islandoraSolrResult['response']['objects']);
+      foreach ($processor->islandoraSolrResult['response']['objects'] as $object) {
+        array_push($context['sandbox']['xquery_batch'], $object['PID']);
+      }
+
+      $pid = array_pop($context['sandbox']['xquery_batch']);
+      // dd($pid, 'from fresh search');
+      // dd($context['sandbox']['xquery_batch'], 'push this');
+      // $pid = $solr_result['PID'];
+      $context['sandbox']['search_settings']['offset'] += $context['sandbox']['search_settings']['step_size'];
+    }
+
   }
   return islandora_object_load($pid);
 }
